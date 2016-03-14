@@ -14,5 +14,5 @@
   :profiles {:dev {:dependencies [[javax.servlet/servlet-api "2.5"]
                                   [hiccup "1.0.5"]
                                   [ring/ring-mock "0.3.0"]]
-                   :env {:bagel-db-path "~/.bagels/dev.db"}}})
+                   :env {:bagel-db-path "~/.bagels/dbs/dev"}}})
 
