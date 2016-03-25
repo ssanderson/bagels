@@ -1,7 +1,7 @@
 (ns bagels.db
   (:require [bagels.util :refer [realpath expanduser]]
             [clojure.core :refer [filter list? string? symbol?]]
-            [clojure.string :refer [split]]
+            [clojure.string :refer [split, join]]
             [clojure.java.jdbc :as sql]
             [clojure.java.io :as io]
             [clojure.tools.macro :as macro]
@@ -20,30 +20,26 @@
   bagel and each cream cheese flavor."
   ;; Helpers for primary key, notnull, and foreign-key constraints.
   (let [pkey (fn [name] [name :int :primary :key :auto_increment])
-        notnull (fn [& spec] (conj (vec spec) "NOT NULL"))
-        fkey (fn [source-column]
-               (let [source-column (name source-column)
-                     [target-table target-column] (split source-column #"_")]
-                 [(apply format "FOREIGN KEY (%s) REFERENCES %s(%s)"
-                         (map name [source-column target-table target-column]))]))]
+        fkey (fn [source-column target-table target-column]
+               [(apply format "FOREIGN KEY (%s) REFERENCES %s(%s)"
+                       (map name [source-column target-table target-column]))])]
     {:user [(pkey :id)
-            (notnull :name :varchar)
-            (notnull :email :varchar)]
+            [:email :varchar :not :null :unique]]
      :bagel [(pkey :id)
-             (notnull :name :varchar)]
-     :bagelpref [(pkey :id)
-                 (notnull :user_id :int)
-                 (notnull :bagel_id :int)
-                 (fkey :user_id)
-                 (fkey :bagel_id)]
-     :creamcheese [(pkey :id)
-                   (notnull :name :varchar)]
-     :creamcheesepref [(pkey :id)
-                       (notnull :value :int)
-                       (notnull :user_id :int)
-                       (notnull :creamcheese_id :int)
-                       (fkey :user_id)
-                       (fkey :creamcheese_id)]}))
+             [:flavor :varchar :not :null :unique]]
+     :bagel_pref [(pkey :id)
+                  [:user_id :int :not :null]
+                  [:bagel_id :int :not :null]
+                  (fkey :user_id :user :id)
+                  (fkey :bagel_id :bagel :id)]
+     :cream_cheese [(pkey :id)
+                    [:flavor :varchar :not :null]]
+     :cream_cheese_pref [(pkey :id)
+                         [:value :int :not :null]
+                         [:user_id :int :not :null]
+                         [:cream_cheese_id :int :not :null]
+                         (fkey :user_id :user :id)
+                         (fkey :cream_cheese_id :cream_cheese :id)]}))
 
 (defn- schema-to-sql
   "Convert a map from table -> column -> description into a sequence of CREATE
@@ -54,19 +50,20 @@
     (map spec-to-sql schema)))
 
 (defn create-tables
-  "Create tables from the bagel schema."
+  "Create tables for the bagel schema."
   [settings]
   (sql/with-db-connection [conn settings]
     (let [statements (schema-to-sql bagel-schema)]
       (apply sql/db-do-commands conn true statements))))
 
 (defn- param?
+  "Is this token a parameter token for defquery?"
   [l]
   (and (= (first l) '?)
        (symbol? (second l))))
 
-(defn- extract-param
-  "Extract a parameter from defsql token.
+(defn- param-name-or-nil
+  "Extract a parameter from defsql parameter token.
 
   If the token is a string, yield nil, indicating no parameter associated with
   the token.
@@ -82,40 +79,48 @@
     :else (throw
            (ex-info
             (format
-             "Bad in defsql. Expected string or '(? param) pair. Got %s." elem)
+             "Bad token in defquery. Expected string or '(? param) pair. Got %s." elem)
             {:cause elem}))))
 
-
-(defn- collect-params
+(defn collect-params
+  "Collect parameter forms from a query."
   [tokens]
-  (map vector (filter identity (map extract-param tokens)) (range)))
+  (into [] (->> tokens
+                (map param-name-or-nil)
+                (filter identity))))
 
-(defn- defsql-arglist
-  "Helper for parsing substitution parameters from a query string."
-  [query]
-  (let [params (filter list? query)]
-    nil))
+(defn- defquery-signature
+  "Generate the signature form for query."
+  [spec-arg-name params]
+  (let [keywords (vec (distinct params))]
+    `[~spec-arg-name & {:keys ~keywords}]))
 
-(defn- defsql-impl
-  "Real implementation of defsql. Converts function name and query text into a
-  function that takes a settings map plus arguments for all placeholders in the
-  query text."
+(defn- defquery-body
+  "Generate the body form for defquery."
+  [spec-arg-name query params]
+  (let [sql-text (join "" (map #(if (param? %) "? " %) query))
+        query-args (into [sql-text] params)]
+    `(sql/query ~spec-arg-name ~query-args)))
+
+(defn- defquery-impl
+  "Real implementation of defquery. Converts a function name and query text
+  into a function that takes a settings map plus arguments for all placeholders
+  in the query text."
   [name query]
-  (let [query (eval query)]
+  (let [params (collect-params query)
+        spec-arg-name 'db-spec]
     `(defn ~name
-       ~(defsql-arglist query))))
+       ~(defquery-signature spec-arg-name params)
+       ~(defquery-body spec-arg-name query params))))
 
-(defmacro defsql
+(defmacro defquery
   "Macro for creating simple sql queries."
-  ([name & query]
-   nil))
-  ;;(defsql-impl name query)))
+  ([name & forms]
+   (defquery-impl name forms)))
 
-(defsql list-tables
-  "SELECT * from information_schema.tables "
-  "where table_schema=" (? schema_name))
+(defquery list-tables
+  "SELECT table_name from information_schema.tables "
+  "where table_schema='PUBLIC'")
 
-;; (defn list-tables
-;;   "List existing tables in the bagel DB."
-;;   (sql/with-db-connection [conn settings]
-;;     (sql/query conn "SELECT * from information_schema.tables
+(defquery get-user
+  "SELECT * FROM user where email=" (? email))
