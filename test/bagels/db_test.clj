@@ -1,5 +1,5 @@
 (ns bagels.db-test
-  (:require[clojure.test :refer :all]
+  (:require[clojure.test :refer [deftest testing is]]
            [bagels.db :as db]))
 
 (deftest test-defquery

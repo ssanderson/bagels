@@ -7,7 +7,8 @@
             [clojure.tools.macro :as macro]
             [environ.core :refer [env]]))
 
-(def default-settings
+(defn default-settings
+  []
   {:classname "org.h2.Driver"
    :subprotocol "h2:file"
    :subname (str "file://" (realpath (:bagel-db-path env)))})
@@ -62,32 +63,24 @@
   (and (= (first l) '?)
        (symbol? (second l))))
 
-(defn- param-name-or-nil
-  "Extract a parameter from defsql parameter token.
+(def param-symbol second)
 
-  If the token is a string, yield nil, indicating no parameter associated with
-  the token.
-
-  If the token is a pair of symbols whose first entry is '?, yield the second
-  entry.
-
-  Otherwise, raise an error."
+(defn- bad-query-elem
   [elem]
-  (cond
-    (string? elem) nil
-    (param? elem) (second elem)
-    :else (throw
-           (ex-info
-            (format
-             "Bad token in defquery. Expected string or '(? param) pair. Got %s." elem)
-            {:cause elem}))))
+  (ex-info
+   (format
+    "Bad token in defquery. Expected string or '(? param) pair. Got %s." elem)
+   {:cause elem}))
 
 (defn collect-params
   "Collect parameter forms from a query."
   [tokens]
   (into [] (->> tokens
-                (map param-name-or-nil)
-                (filter identity))))
+                (map #(cond
+                        (string? %) nil
+                        (param? %) (param-symbol %)
+                        :else (throw (bad-query-elem %))))
+                (keep identity))))
 
 (defn- defquery-signature
   "Generate the signature form for query."
@@ -117,10 +110,6 @@
   "Macro for creating simple sql queries."
   ([name & forms]
    (defquery-impl name forms)))
-
-(defquery list-tables
-  "SELECT table_name from information_schema.tables "
-  "where table_schema='PUBLIC'")
 
 (defquery get-user
   "SELECT * FROM user where email=" (? email))
